@@ -1,0 +1,891 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#a3e3f2">
+<title>Sad Bunnies</title>
+<style>
+  /* One screen, one world: a flat pale-blue map that scrolls under a centred cat. */
+  :root {
+    --sky: #a3e3f2;
+    --ink: #2b3a42;
+    --bar: #30e0c0;
+    --bar-edge: #0b4a40;
+    --end-ink: #14566a;
+    --hint: #3b7185;
+    color-scheme: light;
+  }
+  html, body { height: 100%; margin: 0; overflow: hidden; background: var(--sky); color: var(--ink); overscroll-behavior: none; touch-action: none; }
+  html { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  /* the game fills the whole screen, so taps work everywhere, even under the phone's status bar */
+  #stage { position: fixed; top: 0; right: 0; bottom: 0; left: 0; overflow: hidden; touch-action: none; -webkit-tap-highlight-color: transparent; }
+  #game { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
+
+  #hud {
+    position: fixed; top: 0; right: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+    padding: calc(env(safe-area-inset-top, 0px) + 12px) calc(env(safe-area-inset-right, 0px) + 16px) 0 0;
+    pointer-events: none; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums;
+  }
+  #hud .row { display: flex; align-items: center; gap: 7px; font-size: 16px; }
+  #hud .row.small { font-size: 13px; gap: 5px; color: #3d6272; }
+  #hud .row.small span + img { margin-left: 8px; }
+  #hud img { display: block; height: 26px; image-rendering: pixelated; }
+  #hud .row.small img { height: 20px; }
+
+  #hint {
+    position: fixed; left: 0; right: 0; bottom: 0; text-align: center; pointer-events: none;
+    padding: 0 20px calc(env(safe-area-inset-bottom, 0px) + 24px);
+    font-size: 14px; color: var(--hint); transition: opacity .7s ease; text-wrap: balance;
+  }
+
+  #end {
+    position: fixed; top: 0; right: 0; bottom: 0; left: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+    padding: 24px; text-align: center; background: rgba(163, 227, 242, .95);
+  }
+  #end[hidden] { display: none; }
+  #end p { margin: 0; font-size: 26px; font-weight: 700; color: var(--end-ink); text-wrap: balance; }
+  #end button {
+    font: inherit; font-size: 17px; font-weight: 700; padding: 12px 28px; border-radius: 999px; cursor: pointer;
+    border: 2px solid var(--bar-edge); background: var(--bar); color: var(--bar-edge);
+  }
+  #end button:focus-visible { outline: 3px solid var(--bar-edge); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="game" role="img" aria-label="Sad Bunnies game: tap to walk the cat to a sad bunny and hug it"></canvas>
+  <div id="hud" aria-live="polite">
+    <div class="row"><img id="hudBunny" alt="Sad bunnies left"><span id="count">x 44</span></div>
+    <div class="row small"><img id="hudCarrot" alt="Carrots"><span id="carrots">x 0</span><img id="hudFly" alt="Butterflies caught"><span id="flies">x 0</span></div>
+  </div>
+  <div id="hint"></div>
+  <div id="end" hidden>
+    <p>All the bunnies are happy!</p>
+    <button id="again" type="button">Play again</button>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+/* ------------------------------------------------------------------ *
+ *  Numbers. World units are CSS pixels at the base zoom (1 sprite
+ *  cell = 3 px), so "211px" on an arrow is a real distance in the map.
+ *  The map has no edges: the cat can walk in any direction forever.
+ * ------------------------------------------------------------------ */
+const HALF = 2200, N_BUNNIES = 44, N_CARROTS = 28, N_FLIES = 7;   // the bunny meadow spans -HALF..HALF around the start
+const SPEED = 150, BOOST = 1.7;     // cat speed in world px per second; x1.7 while "zoomies"
+const REACH = 40;                   // cat starts a hug when this close to a sad bunny
+const HIT_R = 46;                   // a tap this close to a sad bunny means "go to that bunny"
+const CAT_HIT = 34;                 // a tap this close to the cat means "pet the cat"
+const HUG_SLIDE = 0.3, HUG_FILL = 1.1, HUG_HOLD = 0.6, HUG_DX = 25.5;   // HUG_DX: cat-to-bunny distance = 8.5 sprite cells
+const TREE_CELL = 150, TREE_P = 0.30, FLOWER_CELL = 110, FLOWER_P = 0.20;
+const PHRASES = ['yeah!', 'thanks!', 'yeah!', 'thanks!', 'yay!', 'love you!', 'so happy!'];
+const GIFT_PHRASES = ['yum!', 'yummy!', 'carrots! yay!'];
+
+const COL = { sky: '#a3e3f2', arrow: '#1ba2c8', label: '#4aaecb', say: '#2f4552', bar: '#30e0c0', barEdge: '#0b4a40', z: '#4f86a0', dust: '#ffffff' };
+const PAL = {
+  K: '#1d1a17', O: '#f1c089', D: '#e0a56a', L: '#f9dcb0', E: '#2d231b', P: '#f4a3a8',
+  W: '#fcfcfc', w: '#dbe6ee', T: '#bf9f6e',
+  R: '#ff5e84', r: '#ff9db7', Y: '#fff08a', H: '#ffffff', N: '#2f6f86',
+  C: '#f58a1f', c: '#d96d0a', G: '#46b35a', g: '#2f8f43',
+  a: '#ff8fb3', y: '#ffd54a', v: '#a98cf2',
+  m: '#f58fb2', n: '#fdfdfd', l: '#b794f4', u: '#ffb347', j: '#ffd84a'
+};
+const PETAL_COL = { m: '#f58fb2', n: '#fdfdfd', l: '#b794f4', u: '#ffb347' };
+
+/* ------------------------------------------------------------------ *
+ *  Pixel art. Rows are drawn without the outline; the black outline
+ *  is added around every shape when the sprite is built.
+ * ------------------------------------------------------------------ */
+const edit = (rows, changes) => rows.map((r, i) => (changes[i] !== undefined ? changes[i] : r));
+const CAT = [
+  '.OO....OO.',
+  '.OPO..OPO.',
+  '.OOOOOOOO.',
+  'OOOOOOOOOO',
+  'OOEOOOOEOO',
+  'OOEOOOOEOO',
+  'OOOOPPOOOO',
+  'OOOEOOEOOO',
+  '.OOOEEOOO.',
+  '.OOOOOOOO.',
+  '.OOLLLLOO.',
+  '.OOLLLLOO.',
+  '.OOOOOOOO.',
+  '.OOO..OOO.'
+];
+const CAT_HUG = edit(CAT, { 5: 'OEOEOOEOEO' });                       // happy closed eyes
+const CAT_SLEEP = edit(CAT, { 4: 'OOOOOOOOOO', 5: 'OOEEOOEEOO' });    // sleepy lines
+const BUN_SAD = [
+  '..WW...WW..',
+  '..WW...WW..',
+  '..WP...PW..',
+  '..WP...PW..',
+  '..WW...WW..',
+  '.WWWWWWWWW.',
+  'WWWWWWWWWWW',
+  'WWWEWWWEWWW',
+  'WWEWWWWWEWW',
+  'WWWWWEWWWWW',
+  '.WWWEWEWWW.',
+  '.WWWWWWWWW.',
+  '.WWWWWWWWW.',
+  '.WwWWWWWwW.',
+  '.WWW...WWW.',
+  '..WW...WW..'
+];
+const BUN_HAPPY = [
+  '..WW...WW..',
+  '..WW...WW..',
+  '..WP...PW..',
+  '..WP...PW..',
+  '..WW...WW..',
+  '.WWWWWWWWW.',
+  'WWWWWWWWWWW',
+  'WWWEWWWEWWW',
+  'WWEWEWEWEWW',
+  'WWPWWWWWPWW',
+  '.WWWEWEWWW.',
+  '.WWWWEWWWW.',
+  '.WWWWWWWWW.',
+  '.WwWWWWWwW.',
+  '.WWW...WWW.',
+  '..WW...WW..'
+];
+const HEART = ['.RR.RR.', 'RrRRRRR', 'RRRRRRR', '.RRRRR.', '..RRR..', '...R...'];
+const SPARK = ['..Y..', '..Y..', 'YYHYY', '..Y..', '..Y..'];
+const NOTE = ['...NN.', '...N.N', '...N..', '...N..', '.NNN..', 'NNNN..', '.NN...'];
+const CARROT = ['..G.G..', '...g...', '.CCCCC.', '.CCcCC.', '..CCC..', '..CcC..', '...C...'];
+const FLY_OPEN = [
+  '.E.....E.',
+  '..E...E..',
+  'BBB.E.BBB',
+  'BHBBEBBHB',
+  'BBBBEBBBB',
+  '.BBBEBBB.',
+  '..BBEBB..',
+  '..BB.BB..'
+];
+const FLY_CLOSED = [          // wings half folded, so the flap reads as a flap
+  '.E.....E.',
+  '..E...E..',
+  '..BB.BB..',
+  '.BBBEBBB.',
+  '.BHBEBHB.',
+  '..BBEBB..',
+  '..BBEBB..',
+  '...B.B...'
+];
+const FLOWER = ['..F..', '.FFF.', 'FFjFF', '.FFF.', '..F..'];
+
+function treeRows() {
+  const TW = 20, TH = 29, g = [];
+  for (let y = 0; y < TH; y++) g.push(new Array(TW).fill('.'));
+  const tiers = [[0, 9, 1, 6], [7, 10, 3, 8], [15, 11, 5, 10]];   // top, height, half-width at top, half-width at bottom
+  for (const [top, h, a, b] of tiers) {
+    for (let r = 0; r < h; r++) {
+      const hw = Math.round(a + (b - a) * r / (h - 1));
+      for (let c = 10 - hw; c < 10 + hw; c++) g[top + r][c] = 'T';
+    }
+  }
+  for (let y = 26; y < TH; y++) for (let c = 8; c < 12; c++) g[y][c] = 'T';
+  return g.map(r => r.join(''));
+}
+
+/* The hug: cat and bunny merged into one picture, arms wrapped around each other. */
+const BUN_OFF = 8, PAIR_W = BUN_OFF + 11;      // the bunny's left edge inside the merged picture
+function composePair(lean) {
+  const Wd = PAIR_W, Ht = 16, g = [];
+  for (let y = 0; y < Ht; y++) g.push(new Array(Wd).fill('.'));
+  const put = (rows, ox, oy, headRows, dx) => {
+    for (let y = 0; y < rows.length; y++) for (let x = 0; x < rows[y].length; x++) {
+      const ch = rows[y][x]; if (ch === '.') continue;
+      const gx = ox + x + (y < headRows ? dx : 0), gy = oy + y;
+      if (gx >= 0 && gx < Wd && gy >= 0 && gy < Ht) g[gy][gx] = ch;
+    }
+  };
+  put(BUN_HAPPY, BUN_OFF, 0, 12, -lean);   // bunny behind, head leans toward the cat
+  put(CAT_HUG, 0, 2, 9, lean);             // cat in front, head leans toward the bunny
+  const bx = BUN_OFF;
+  for (let x = bx; x <= bx + 5; x++) g[11][x] = 'O';       // cat's arm around the bunny's back, paw at the end
+  g[11][bx + 6] = 'K';
+  for (let x = bx + 1; x <= bx + 6; x++) g[12][x] = 'K';
+  for (let x = 3; x <= bx; x++) g[13][x] = 'W';            // bunny's arm around the cat's back, paw at the end
+  g[13][2] = 'K';
+  for (let x = 3; x <= bx; x++) g[14][x] = 'K';
+  return g.map(r => r.join(''));
+}
+
+function buildSprite(rows, cellPx, outline) {
+  const h = rows.length, w = rows[0].length, pad = outline === false ? 0 : 1;
+  const W = w + pad * 2, H = h + pad * 2;
+  let g = [];
+  for (let y = 0; y < H; y++) g.push(new Array(W).fill(null));
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const ch = rows[y][x]; if (ch !== '.') g[y + pad][x + pad] = PAL[ch]; }
+  if (pad) {
+    const o = g.map(r => r.slice());
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      if (g[y][x]) continue;
+      if ((y > 0 && g[y - 1][x]) || (y < H - 1 && g[y + 1][x]) || (x > 0 && g[y][x - 1]) || (x < W - 1 && g[y][x + 1])) o[y][x] = PAL.K;
+    }
+    g = o;
+  }
+  const c = document.createElement('canvas');
+  c.width = W * cellPx; c.height = H * cellPx;
+  const k = c.getContext('2d');
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (g[y][x]) { k.fillStyle = g[y][x]; k.fillRect(x * cellPx, y * cellPx, cellPx, cellPx); }
+  return { c, w: c.width, h: c.height };
+}
+function flipSprite(s) {
+  const c = document.createElement('canvas'); c.width = s.w; c.height = s.h;
+  const k = c.getContext('2d'); k.translate(s.w, 0); k.scale(-1, 1); k.drawImage(s.c, 0, 0);
+  return { c, w: s.w, h: s.h };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Setup
+ * ------------------------------------------------------------------ */
+const stage = document.getElementById('stage');
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const countEl = document.getElementById('count');
+const carrotsEl = document.getElementById('carrots');
+const fliesEl = document.getElementById('flies');
+const hintEl = document.getElementById('hint');
+const endEl = document.getElementById('end');
+const againBtn = document.getElementById('again');
+
+let vw = 0, vh = 0, dpr = 1, Z = 1, cell = 3, spr = null;
+let seed = 0, time = 0, last = 0, started = false, hintTimer = 0, hintStage = 0;
+let cat, bunnies, carrots, flies, fx, remaining, hug, rings, endTimer, bunnyGrid;
+const treeCache = new Map(), flowerCache = new Map(), flowerGone = new Map();
+const pointer = { down: false, id: null, x: 0, y: 0, downX: 0, downY: 0, downT: 0, hold: false, ignore: false, tapX: 0, tapY: 0 };
+
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ck = (ix, iy) => (ix + 50000) * 100000 + (iy + 50000);
+function mulberry(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hash(ix, iy, k) {
+  let h = Math.imul(ix | 0, 374761393) ^ Math.imul(iy | 0, 668265263) ^ Math.imul((seed + k) | 0, 1274126177);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+function buildSprites() {
+  const S = cell, F = Math.max(1, Math.round(cell * 2 / 3)), I = Math.max(1, Math.round(2 * dpr));
+  const mk = (rows, c, o) => buildSprite(rows, c || S, o);
+  const sub = (rows, from, to) => rows.map(r => r.replace(new RegExp(from, 'g'), to));
+  const pair = [mk(composePair(0)), mk(composePair(1))];
+  spr = {
+    catA: mk(CAT), catB: mk(edit(CAT, { 13: '..OO..OO..' })), catSleep: mk(CAT_SLEEP),
+    bunSad: mk(BUN_SAD), bunHappy: mk(BUN_HAPPY),
+    tree: mk(treeRows(), S, false),
+    heart: mk(HEART, F, false), spark: mk(SPARK, F, false), note: mk(NOTE, F, false),
+    carrot: mk(CARROT), carrotS: mk(CARROT, F),
+    fly: ['a', 'y', 'v'].map(ch => [mk(sub(FLY_OPEN, 'B', ch), F), mk(sub(FLY_CLOSED, 'B', ch), F)]),
+    flower: ['m', 'n', 'l', 'u'].map(ch => mk(sub(FLOWER, 'F', ch), F, false)),
+    pair: [pair, pair.map(flipSprite)]
+  };
+  document.getElementById('hudBunny').src = mk(BUN_SAD.slice(0, 11), I).c.toDataURL();
+  document.getElementById('hudCarrot').src = mk(CARROT, I).c.toDataURL();
+  document.getElementById('hudFly').src = mk(sub(FLY_OPEN, 'B', 'a'), I).c.toDataURL();
+}
+
+function resize() {
+  const w = stage.clientWidth || window.innerWidth, h = stage.clientHeight || window.innerHeight;
+  const d = Math.min(window.devicePixelRatio || 1, 3);
+  if (!w || !h) return;
+  vw = w; vh = h; dpr = d;
+  canvas.width = Math.round(vw * dpr); canvas.height = Math.round(vh * dpr);
+  const cellCss = clamp(Math.round(Math.min(vw, vh) / 130), 2, 5);
+  Z = cellCss / 3;
+  const newCell = Math.max(1, Math.round(cellCss * dpr));
+  if (!spr || newCell !== cell || spr.dpr !== dpr) { cell = newCell; buildSprites(); spr.dpr = dpr; }
+  if (cat) draw();
+}
+
+/* ------------------------------------------------------------------ *
+ *  World: trees and flowers are generated from the map position, so
+ *  the map goes on in every direction. Bunnies, carrots and butterflies
+ *  are real objects.
+ * ------------------------------------------------------------------ */
+function nearBunny(x, y, r) {
+  const ix = Math.floor(x / TREE_CELL), iy = Math.floor(y / TREE_CELL);
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    const a = bunnyGrid.get(ck(ix + dx, iy + dy));
+    if (a) for (const b of a) if (Math.hypot(b.x0 - x, b.y0 - y) < r) return true;
+  }
+  return false;
+}
+function treeAt(ix, iy) {
+  const key = ck(ix, iy);
+  let t = treeCache.get(key);
+  if (t !== undefined) return t;
+  t = null;
+  if (hash(ix, iy, 11) < TREE_P) {
+    const x = (ix + 0.1 + 0.8 * hash(ix, iy, 12)) * TREE_CELL, y = (iy + 0.1 + 0.8 * hash(ix, iy, 13)) * TREE_CELL;
+    if (x * x + y * y >= 10000 && !nearBunny(x, y, 80)) t = { x, y };
+  }
+  if (treeCache.size > 6000) treeCache.clear();
+  treeCache.set(key, t);
+  return t;
+}
+function nearTree(x, y, r) {
+  const ix = Math.floor(x / TREE_CELL), iy = Math.floor(y / TREE_CELL);
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    const t = treeAt(ix + dx, iy + dy);
+    if (t && Math.hypot(t.x - x, t.y - y) < r) return true;
+  }
+  return false;
+}
+function flowerAt(ix, iy) {
+  const key = ck(ix, iy);
+  let f = flowerCache.get(key);
+  if (f !== undefined) return f;
+  f = null;
+  if (hash(ix, iy, 21) < FLOWER_P) f = { x: (ix + 0.1 + 0.8 * hash(ix, iy, 22)) * FLOWER_CELL, y: (iy + 0.1 + 0.8 * hash(ix, iy, 23)) * FLOWER_CELL, v: Math.floor(hash(ix, iy, 24) * 4), key };
+  if (flowerCache.size > 6000) flowerCache.clear();
+  flowerCache.set(key, f);
+  return f;
+}
+
+function makeBunny(x, y) {
+  return { x, y, x0: x, y0: y, sad: true, hugging: false, away: false, mode: 'sad', wt: 0, vx: 0, vy: 0, tx: 0, ty: 0, nt: 0, moving: false,
+           phase: Math.random() * 6.28, say: '', sayT: 0, label: '', labelT: -1 };
+}
+function makeFly(cx, cy) {
+  const a = Math.random() * 6.283, r = 300 + Math.random() * 500;
+  return { x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r, ang: Math.random() * 6.283, turn: 0, tt: 0, col: Math.floor(Math.random() * 3), ph: Math.random() * 6.28 };
+}
+function spawnCarrot(cx, cy, near, rand) {
+  let x = 0, y = 0;
+  for (let i = 0; i < 14; i++) {
+    if (near) { const a = Math.random() * 6.283, r = 500 + Math.random() * 900; x = cx + Math.cos(a) * r; y = cy + Math.sin(a) * r; }
+    else { x = (rand() * 2 - 1) * (HALF - 120); y = (rand() * 2 - 1) * (HALF - 120); }
+    if (!nearTree(x, y, 50)) break;
+  }
+  return { x, y };
+}
+
+function newGame(restore) {
+  restore = restore || {};
+  seed = restore.seed != null ? restore.seed : (Math.random() * 4294967296) >>> 0;
+  const rand = mulberry(seed);
+  cat = { x: 0, y: 0, tx: 0, ty: 0, moving: false, state: 'free', jumpT: 0, sleeping: false, idleT: 0, boost: 0, carrots: 0, flies: 0, say: '', sayT: 0, nz: 0, nd: 0 };
+  bunnies = []; carrots = []; flies = []; fx = []; rings = []; hug = null;
+  treeCache.clear(); flowerCache.clear(); flowerGone.clear();
+  clearTimeout(endTimer);
+  endEl.hidden = true;
+
+  const a0 = rand() * Math.PI * 2;                       // first bunny close by, like in the video
+  bunnies.push(makeBunny(Math.cos(a0) * 240, Math.sin(a0) * 240));
+  for (let guard = 0; bunnies.length < N_BUNNIES && guard < 30000; guard++) {
+    const x = (rand() * 2 - 1) * (HALF - 160), y = (rand() * 2 - 1) * (HALF - 160);
+    if (Math.hypot(x, y) < 320) continue;
+    if (bunnies.some(b => Math.hypot(b.x - x, b.y - y) < 380)) continue;
+    bunnies.push(makeBunny(x, y));
+  }
+  bunnyGrid = new Map();
+  for (const b of bunnies) { const key = ck(Math.floor(b.x0 / TREE_CELL), Math.floor(b.y0 / TREE_CELL)); (bunnyGrid.get(key) || bunnyGrid.set(key, []).get(key)).push(b); }
+  for (let i = 0; i < N_CARROTS; i++) carrots.push(spawnCarrot(0, 0, false, rand));
+  for (let i = 0; i < N_FLIES; i++) flies.push(makeFly(0, 0));
+
+  if (Array.isArray(restore.cheered)) for (const i of restore.cheered) {
+    const b = bunnies[i]; if (!b) continue;
+    b.sad = false; b.mode = 'idle'; b.wt = 1 + Math.random() * 2;
+  }
+  if (restore.cat) { cat.x = cat.tx = restore.cat.x; cat.y = cat.ty = restore.cat.y; }
+  remaining = bunnies.filter(b => b.sad).length;
+  countEl.textContent = 'x ' + remaining;
+  carrotsEl.textContent = 'x 0'; fliesEl.textContent = 'x 0';
+  hintStage = 0;
+  showHint('Tap or drag where you want the cat to go', 9000);
+}
+
+function showHint(text, ms) {
+  hintEl.textContent = text; hintEl.style.opacity = '1';
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(() => { hintEl.style.opacity = '0'; }, ms);
+}
+const setCarrots = () => { carrotsEl.textContent = 'x ' + cat.carrots; };
+const setFlies = () => { fliesEl.textContent = 'x ' + cat.flies; };
+
+/* ------------------------------------------------------------------ *
+ *  Little effects
+ * ------------------------------------------------------------------ */
+function fxAdd(o) { o.t = 0; fx.push(o); }
+const fxHeart = (x, y) => fxAdd({ k: 'heart', x, y, vx: (Math.random() - 0.5) * 16, vy: -36 - Math.random() * 14, life: 1.3 });
+const fxSpark = (x, y) => fxAdd({ k: 'spark', x, y, vx: 0, vy: -8, life: 0.55 });
+const fxPetal = (x, y, col) => fxAdd({ k: 'petal', x, y, vx: (Math.random() - 0.5) * 70, vy: -35 - Math.random() * 30, life: 0.75, col });
+const fxNote = (x, y) => fxAdd({ k: 'note', x, y, vx: (Math.random() - 0.5) * 18, vy: -30, life: 1.4 });
+const fxZ = (x, y) => fxAdd({ k: 'z', x, y, vx: 12, vy: -20, life: 2.1 });
+const fxDust = (x, y) => fxAdd({ k: 'dust', x, y, vx: (Math.random() - 0.5) * 24, vy: -8, life: 0.45 });
+
+/* ------------------------------------------------------------------ *
+ *  Input: tap = walk there. Hold or drag = keep following the finger.
+ *  Tap the cat = meow.
+ * ------------------------------------------------------------------ */
+const toWorld = (sx, sy) => ({ x: cat.x + (sx - vw / 2) / Z, y: cat.y + (sy - vh / 2) / Z });
+function setTarget(x, y) { cat.tx = x; cat.ty = y; }
+
+function cancelHug() {
+  if (!hug) return;
+  hug.b.hugging = false; hug.b.away = true;
+  if (hug.gift) { cat.carrots++; setCarrots(); }
+  hug = null; cat.state = 'free';
+}
+
+function meow() {
+  cat.sleeping = false; cat.idleT = 0;
+  cat.say = 'meow!'; cat.sayT = 1.2; cat.jumpT = 0.45;
+  fxHeart(cat.x + 6, cat.y - 54);
+  for (const b of bunnies) {                          // every happy bunny nearby comes running to dance
+    if (b.sad || b.hugging) continue;
+    if (Math.hypot(b.x - cat.x, b.y - cat.y) > 1100) continue;
+    const a = Math.random() * 6.283, r = 60 + Math.random() * 60;
+    b.tx = cat.x + Math.cos(a) * r; b.ty = cat.y + Math.sin(a) * r * 0.6 + 8;
+    b.mode = 'come'; b.wt = 0;
+  }
+}
+
+function onDown(e) {
+  if (e.isPrimary === false || !endEl.hidden) return;     // a fresh press always replaces a stale one
+  pointer.down = true; pointer.id = e.pointerId; pointer.ignore = false;
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+  const r = canvas.getBoundingClientRect();
+  pointer.x = pointer.downX = e.clientX - r.left; pointer.y = pointer.downY = e.clientY - r.top;
+  pointer.downT = performance.now(); pointer.hold = false;
+  cat.idleT = 0; cat.sleeping = false;
+  if (hintStage === 0) { hintStage = 1; hintEl.style.opacity = '0'; clearTimeout(hintTimer); }
+
+  let p = toWorld(pointer.x, pointer.y);
+  if (cat.state === 'free' && Math.hypot(p.x - cat.x, p.y - (cat.y - 22)) < CAT_HIT) { pointer.ignore = true; meow(); return; }
+  // a tap on a sad bunny sends the cat straight to it
+  let best = null, bd = HIT_R;
+  for (const b of bunnies) {
+    if (!b.sad || b.hugging) continue;
+    const d = Math.hypot(b.x - p.x, (b.y - 24) - p.y);
+    if (d < bd) { bd = d; best = b; }
+  }
+  if (best) { best.away = false; p = { x: best.x, y: best.y }; }
+
+  if (cat.state === 'hug') {
+    if (Math.hypot(p.x - cat.x, p.y - cat.y) < 70) { pointer.ignore = true; return; }   // poking the pair: keep hugging
+    cancelHug();
+  }
+  pointer.tapX = p.x; pointer.tapY = p.y;
+  setTarget(p.x, p.y);
+  rings.push({ x: p.x, y: p.y, t: 0 });
+}
+function onMove(e) {
+  if (!pointer.down || e.pointerId !== pointer.id) return;
+  const r = canvas.getBoundingClientRect();
+  pointer.x = e.clientX - r.left; pointer.y = e.clientY - r.top;
+}
+function onUp(e) {
+  if (!pointer.down || e.pointerId !== pointer.id) return;
+  pointer.down = false;
+  if (pointer.ignore) return;
+  if (pointer.hold) {
+    // after a drag, glide a short way and stop
+    const dx = cat.tx - cat.x, dy = cat.ty - cat.y, d = Math.hypot(dx, dy);
+    if (d > 48) setTarget(cat.x + dx / d * 48, cat.y + dy / d * 48);
+  } else {
+    setTarget(pointer.tapX, pointer.tapY);
+  }
+}
+function releasePointer() { pointer.down = false; }
+canvas.addEventListener('pointerdown', onDown);
+canvas.addEventListener('pointermove', onMove);
+canvas.addEventListener('pointerup', onUp);
+canvas.addEventListener('pointercancel', onUp);
+canvas.addEventListener('lostpointercapture', onUp);
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+window.addEventListener('blur', releasePointer);
+document.addEventListener('visibilitychange', releasePointer);
+// keep the phone's own swipe gestures (scroll, pull to refresh) away from the game
+document.addEventListener('touchmove', e => { if (e.cancelable) e.preventDefault(); }, { passive: false });
+document.addEventListener('touchstart', e => { if (e.target === canvas && e.cancelable) e.preventDefault(); }, { passive: false });
+againBtn.addEventListener('click', () => newGame());
+
+/* ------------------------------------------------------------------ *
+ *  Update
+ * ------------------------------------------------------------------ */
+function startHug(b) {
+  const gift = cat.carrots > 0;                          // a carrot makes the hug twice as fast
+  if (gift) { cat.carrots--; setCarrots(); fxSpark(b.x, b.y - 40); }
+  b.hugging = true;
+  cat.state = 'hug'; cat.moving = false; cat.tx = cat.x; cat.ty = cat.y; cat.sleeping = false;
+  const fill = HUG_FILL / (gift ? 2 : 1);
+  hug = { b, t: 0, side: cat.x <= b.x ? -1 : 1, fx: cat.x, fy: cat.y, gift, fill, total: HUG_SLIDE + fill + HUG_HOLD / (gift ? 2 : 1) };
+}
+
+function finishHug() {
+  const b = hug.b, gift = hug.gift;
+  b.hugging = false; b.sad = false;
+  const list = gift ? GIFT_PHRASES : PHRASES;
+  b.say = list[Math.floor(Math.random() * list.length)]; b.sayT = 1.7;
+  b.mode = 'wait'; b.wt = 0.9;
+  for (let i = 0; i < (gift ? 7 : 4); i++) fxHeart(b.x + (Math.random() < 0.5 ? -1 : 1) * (26 + Math.random() * 20), b.y - 30 - Math.random() * 24);
+  hug = null; cat.state = 'free';
+  remaining = bunnies.filter(x => x.sad).length;
+  countEl.textContent = 'x ' + remaining;
+  if (hintStage === 1) { hintStage = 2; setTimeout(() => showHint('Tap the cat to call the happy bunnies. Carrots make hugs faster.', 7000), 2500); }
+  if (remaining === 0) endTimer = setTimeout(() => { endEl.hidden = false; }, 2200);
+}
+
+function updateHug(dt) {
+  hug.t += dt;
+  const b = hug.b;
+  if (hug.t > HUG_SLIDE) { hug.nh = (hug.nh || 0) - dt; if (hug.nh <= 0) { fxHeart((cat.x + b.x) / 2 + (Math.random() - 0.5) * 30, cat.y - 62); hug.nh = 0.5; } }
+  const hx = b.x + hug.side * HUG_DX, hy = b.y + 2;
+  const k = Math.min(1, hug.t / HUG_SLIDE), e = k * (2 - k);
+  cat.x = hug.fx + (hx - hug.fx) * e; cat.y = hug.fy + (hy - hug.fy) * e;
+  cat.tx = cat.x; cat.ty = cat.y;
+  if (hug.t >= hug.total) finishHug();
+}
+
+function updateHappy(b, dt) {
+  b.sayT = Math.max(0, b.sayT - dt);
+  b.moving = false; b.wt -= dt;
+  if (b.mode === 'wait') {
+    if (b.wt <= 0) {
+      const a = Math.atan2(b.y - cat.y, b.x - cat.x) + (Math.random() - 0.5) * 1.2;
+      b.vx = Math.cos(a) * 70; b.vy = Math.sin(a) * 70; b.mode = 'burst'; b.wt = 0.55;
+    }
+  } else if (b.mode === 'burst' || b.mode === 'walk') {
+    b.x += b.vx * dt; b.y += b.vy * dt; b.moving = true;
+    if (b.wt <= 0) { b.mode = 'idle'; b.wt = 0.6 + Math.random() * 1.6; }
+  } else if (b.mode === 'idle') {
+    if (b.wt <= 0) {
+      const a = Math.random() * 6.283;
+      b.vx = Math.cos(a) * 24; b.vy = Math.sin(a) * 24; b.mode = 'walk'; b.wt = 1 + Math.random() * 2;
+    }
+  } else if (b.mode === 'come') {
+    const dx = b.tx - b.x, dy = b.ty - b.y, d = Math.hypot(dx, dy);
+    if (d < 6) { b.mode = 'dance'; b.wt = 4.5; b.nt = 0; }
+    else { const st = Math.min(d, 125 * dt); b.x += dx / d * st; b.y += dy / d * st; b.moving = true; }
+  } else if (b.mode === 'dance') {
+    b.nt -= dt;
+    if (b.nt <= 0) { fxNote(b.x + (Math.random() < 0.5 ? -1 : 1) * (20 + Math.random() * 10), b.y - 48 - Math.random() * 14); b.nt = 0.7 + Math.random(); }
+    if (b.wt <= 0) { b.mode = 'idle'; b.wt = 1; }
+  }
+}
+
+function updateFly(f, dt) {
+  f.tt -= dt;
+  if (f.tt <= 0) { f.turn = (Math.random() - 0.5) * 3; f.tt = 0.4 + Math.random() * 0.8; }
+  const dx = f.x - cat.x, dy = f.y - cat.y, d = Math.hypot(dx, dy);
+  let sp = 38;
+  if (d < 120 && cat.state !== 'hug') {                  // run away from the cat, a bit slower than the cat
+    let diff = Math.atan2(dy, dx) - f.ang; diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+    f.ang += clamp(diff, -6 * dt, 6 * dt); sp = 112;
+  } else f.ang += f.turn * dt;
+  f.x += Math.cos(f.ang) * sp * dt; f.y += Math.sin(f.ang) * sp * dt;
+  if (d > 1100) Object.assign(f, makeFly(cat.x, cat.y));
+}
+
+function update(dt) {
+  time += dt;
+  cat.sayT = Math.max(0, cat.sayT - dt); cat.jumpT = Math.max(0, cat.jumpT - dt); cat.boost = Math.max(0, cat.boost - dt);
+
+  // finger held down: keep heading for the finger
+  if (pointer.down && !pointer.ignore) {
+    if (!pointer.hold && (performance.now() - pointer.downT > 250 || Math.hypot(pointer.x - pointer.downX, pointer.y - pointer.downY) > 14)) pointer.hold = true;
+    if (pointer.hold) {
+      const p = toWorld(pointer.x, pointer.y);
+      if (Math.hypot(p.x - cat.x, p.y - cat.y) < 14 / Z) { cat.tx = cat.x; cat.ty = cat.y; }
+      else {
+        if (cat.state === 'hug' && Math.hypot(p.x - cat.x, p.y - cat.y) > 80) cancelHug();
+        if (cat.state !== 'hug') setTarget(p.x, p.y);
+      }
+    }
+  }
+
+  if (cat.state === 'hug') updateHug(dt);
+  else {
+    const dx = cat.tx - cat.x, dy = cat.ty - cat.y, d = Math.hypot(dx, dy);
+    if (d < 1.5) cat.moving = false;
+    else {
+      const step = Math.min(d, SPEED * (cat.boost > 0 ? BOOST : 1) * dt);
+      cat.x += dx / d * step; cat.y += dy / d * step;
+      cat.moving = true;
+    }
+    if (cat.moving && cat.boost > 0 && Math.random() < dt * 14) fxDust(cat.x + (Math.random() - 0.5) * 14, cat.y - 2);
+
+    // sad bunny close by: hug it
+    for (const b of bunnies) {
+      if (!b.sad || b.hugging) continue;
+      const d2 = Math.hypot(b.x - cat.x, b.y - cat.y);
+      if (b.away) { if (d2 > REACH + 25) b.away = false; continue; }
+      if (d2 < REACH) { startHug(b); break; }
+    }
+    if (cat.state === 'free') {
+      // carrots
+      for (let i = 0; i < carrots.length; i++) {
+        const c = carrots[i];
+        if (cat.carrots < 3 && Math.hypot(c.x - cat.x, c.y - (cat.y - 8)) < 32) {
+          cat.carrots++; setCarrots(); fxSpark(c.x, c.y - 16);
+          carrots[i] = spawnCarrot(cat.x, cat.y, true);
+        }
+      }
+      // butterflies
+      for (const f of flies) {
+        if (Math.hypot(f.x - cat.x, (f.y - 30) - (cat.y - 24)) < 30) {
+          cat.flies++; setFlies(); fxSpark(f.x, f.y - 30); fxSpark(f.x + 12, f.y - 40);
+          Object.assign(f, makeFly(cat.x, cat.y));
+          if (cat.flies % 3 === 0) { cat.boost = 8; cat.say = 'zoomies!'; cat.sayT = 1.4; }
+        }
+      }
+      // flowers puff into petals when stepped on
+      if (cat.moving) {
+        const ix = Math.floor(cat.x / FLOWER_CELL), iy = Math.floor(cat.y / FLOWER_CELL);
+        for (let dx2 = -1; dx2 <= 1; dx2++) for (let dy2 = -1; dy2 <= 1; dy2++) {
+          const f = flowerAt(ix + dx2, iy + dy2);
+          if (f && !(flowerGone.get(f.key) > time) && Math.hypot(f.x - cat.x, f.y - cat.y) < 24) {
+            flowerGone.set(f.key, time + 30);
+            const col = PETAL_COL[['m', 'n', 'l', 'u'][f.v]];
+            for (let i = 0; i < 6; i++) fxPetal(f.x, f.y - 6, col);
+          }
+        }
+      }
+    }
+  }
+
+  // naps: stand still for a while and the cat falls asleep
+  if (cat.state === 'free' && !cat.moving && !pointer.down) {
+    cat.idleT += dt;
+    if (cat.idleT > 10) cat.sleeping = true;
+  } else { cat.idleT = 0; cat.sleeping = false; }
+  if (cat.sleeping) { cat.nz -= dt; if (cat.nz <= 0) { fxZ(cat.x + 14, cat.y - 46); cat.nz = 1.3; } }
+
+  for (const b of bunnies) if (!b.sad) updateHappy(b, dt);
+  for (const f of flies) updateFly(f, dt);
+  for (let i = rings.length - 1; i >= 0; i--) { rings[i].t += dt; if (rings[i].t > 0.5) rings.splice(i, 1); }
+  for (let i = fx.length - 1; i >= 0; i--) {
+    const f = fx[i]; f.t += dt; f.x += f.vx * dt; f.y += f.vy * dt;
+    if (f.k === 'petal') f.vy += 120 * dt;
+    if (f.t >= f.life) fx.splice(i, 1);
+  }
+  if (hintStage === 1 && remaining === N_BUNNIES && time > 25 && cat.carrots > 0) { hintStage = 2; showHint('Tap the cat to call the happy bunnies. Carrots make hugs faster.', 7000); }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Draw (everything in device pixels so the pixel art stays sharp)
+ * ------------------------------------------------------------------ */
+function roundRectPath(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y); ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r); ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h); ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r); ctx.arcTo(x, y, x + r, y, r); ctx.closePath();
+}
+
+function draw() {
+  if (!spr || !cat) return;
+  const W = canvas.width, H = canvas.height, k = Z * dpr;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = COL.sky; ctx.fillRect(0, 0, W, H);
+  const ox = W / 2 - cat.x * k, oy = H / 2 - cat.y * k;
+  const halfW = W / 2 / k + 90, halfH = H / 2 / k + 60;
+  const left = cat.x - halfW, right = cat.x + halfW, top = cat.y - halfH, bottom = cat.y + halfH;
+  const px = v => Math.round(v);
+
+  // flowers lie on the ground, under everything
+  for (let ix = Math.floor(left / FLOWER_CELL); ix <= Math.floor(right / FLOWER_CELL); ix++) {
+    for (let iy = Math.floor(top / FLOWER_CELL); iy <= Math.floor(bottom / FLOWER_CELL); iy++) {
+      const f = flowerAt(ix, iy);
+      if (!f || flowerGone.get(f.key) > time) continue;
+      const s = spr.flower[f.v];
+      ctx.drawImage(s.c, px(ox + f.x * k - s.w / 2), px(oy + f.y * k - s.h / 2));
+    }
+  }
+
+  // everything that stands up is sorted by its feet so the cat can walk behind trees
+  const items = [];
+  for (let ix = Math.floor(left / TREE_CELL); ix <= Math.floor(right / TREE_CELL); ix++) {
+    for (let iy = Math.floor((top - 110) / TREE_CELL); iy <= Math.floor((bottom + 30) / TREE_CELL); iy++) {
+      const t = treeAt(ix, iy);
+      if (t && t.x > left && t.x < right && t.y > top - 110 && t.y < bottom + 30) items.push([t.y, 0, t]);
+    }
+  }
+  const pairShown = hug && hug.t > HUG_SLIDE;
+  for (const b of bunnies) {
+    if (pairShown && hug.b === b) continue;
+    if (b.x > left && b.x < right && b.y > top - 70 && b.y < bottom + 40) items.push([b.y, 1, b]);
+  }
+  for (const c of carrots) if (c.x > left && c.x < right && c.y > top - 40 && c.y < bottom + 20) items.push([c.y, 3, c]);
+  items.push([cat.y, pairShown ? 5 : 2, cat]);
+  items.sort((a, b) => a[0] - b[0]);
+
+  for (const [, type, o] of items) {
+    if (type === 0) {
+      ctx.drawImage(spr.tree.c, px(ox + o.x * k - spr.tree.w / 2), px(oy + o.y * k - spr.tree.h));
+    } else if (type === 1) {
+      const S = o.sad ? spr.bunSad : spr.bunHappy;
+      const hop = o.mode === 'dance' ? Math.abs(Math.sin(time * 9 + o.phase)) * 8 : (!o.sad && o.moving ? Math.abs(Math.sin(time * 10 + o.phase)) * 5 : 0);
+      ctx.drawImage(S.c, px(ox + o.x * k - S.w / 2), px(oy + (o.y - hop) * k - S.h));
+    } else if (type === 3) {
+      ctx.drawImage(spr.carrot.c, px(ox + o.x * k - spr.carrot.w / 2), px(oy + o.y * k - spr.carrot.h));
+    } else if (type === 5) {
+      const S = spr.pair[hug.side < 0 ? 0 : 1][Math.floor(time * 2.5) % 2];
+      const anchor = (hug.side < 0 ? 6 : PAIR_W + 2 - 6) * cell;
+      ctx.drawImage(S.c, px(ox + cat.x * k - anchor), px(oy + cat.y * k - S.h));
+    } else {
+      let S = spr.catA, lift = 0;
+      if (cat.sleeping) { S = spr.catSleep; lift = -cell; }
+      else if (cat.moving || hug) { const f = Math.floor(time * (cat.boost > 0 ? 12 : 8)) % 2; S = f ? spr.catB : spr.catA; lift = f ? cell : 0; }
+      if (cat.jumpT > 0) lift += Math.sin((1 - cat.jumpT / 0.45) * Math.PI) * 20 * k;
+      ctx.drawImage(S.c, px(ox + cat.x * k - S.w / 2), px(oy + cat.y * k - S.h - lift));
+      for (let i = 0; i < cat.carrots; i++) {                  // carrots the cat carries
+        const c = spr.carrotS;
+        ctx.drawImage(c.c, px(ox + cat.x * k + 20 * k + i * 12 * k), px(oy + (cat.y - 4) * k - c.h));
+      }
+    }
+  }
+
+  // butterflies float above everything
+  for (const f of flies) {
+    if (f.x < left || f.x > right || f.y < top - 40 || f.y > bottom + 40) continue;
+    const S = spr.fly[f.col][Math.floor(time * 9 + f.ph) % 2];
+    ctx.drawImage(S.c, px(ox + f.x * k - S.w / 2), px(oy + (f.y - 30 + Math.sin(time * 5 + f.ph) * 4) * k - S.h / 2));
+  }
+
+  // target dot + tap ripples
+  if (cat.moving && !hug) {
+    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    ctx.beginPath(); ctx.arc(ox + cat.tx * k, oy + cat.ty * k, 3 * k, 0, 6.2832); ctx.fill();
+  }
+  ctx.lineWidth = 2 * dpr;
+  for (const r of rings) {
+    const p = r.t / 0.5;
+    ctx.strokeStyle = 'rgba(255,255,255,' + (0.7 * (1 - p)).toFixed(3) + ')';
+    ctx.beginPath(); ctx.arc(ox + r.x * k, oy + r.y * k, (8 + 16 * p) * k, 0, 6.2832); ctx.stroke();
+  }
+
+  // hearts, sparkles, petals, notes, z z z
+  for (const f of fx) {
+    const p = f.t / f.life, a = 1 - p * p * p;
+    ctx.globalAlpha = a;
+    if (f.k === 'heart' || f.k === 'spark' || f.k === 'note') {
+      const S = spr[f.k]; ctx.drawImage(S.c, px(ox + f.x * k - S.w / 2), px(oy + f.y * k - S.h / 2));
+    } else if (f.k === 'petal') {
+      ctx.fillStyle = f.col; ctx.fillRect(px(ox + f.x * k), px(oy + f.y * k), 2 * cell / 1.5, 2 * cell / 1.5);
+    } else if (f.k === 'dust') {
+      ctx.fillStyle = COL.dust; ctx.beginPath(); ctx.arc(ox + f.x * k, oy + f.y * k, (3 + 4 * p) * k, 0, 6.2832); ctx.fill();
+    } else if (f.k === 'z') {
+      ctx.fillStyle = COL.z; ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+      ctx.font = '700 ' + Math.round((13 + 6 * p) * dpr * Math.max(1, Z)) + 'px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+      ctx.fillText('z', ox + f.x * k, oy + f.y * k);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // hug progress bar above the pair
+  if (pairShown) {
+    const p = clamp((hug.t - HUG_SLIDE) / hug.fill, 0, 1);
+    const topY = cat.y - spr.pair[0][0].h / k;
+    const bw = 40 * k, bh = 9 * k, bx = ox + (cat.x + hug.b.x) / 2 * k - bw / 2, by = oy + topY * k - 14 * k;
+    roundRectPath(bx, by, bw, bh, bh / 2); ctx.fillStyle = 'rgba(255,255,255,.82)'; ctx.fill();
+    ctx.save(); roundRectPath(bx, by, bw, bh, bh / 2); ctx.clip();
+    const grad = ctx.createLinearGradient(bx, 0, bx + bw, 0); grad.addColorStop(0, '#1fa58f'); grad.addColorStop(1, COL.bar);
+    ctx.fillStyle = grad; ctx.fillRect(bx, by, bw * p, bh); ctx.restore();
+    roundRectPath(bx, by, bw, bh, bh / 2); ctx.lineWidth = 1.6 * dpr; ctx.strokeStyle = COL.barEdge; ctx.stroke();
+  }
+
+  // speech: "yeah!", "thanks!", "meow!"
+  ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'center';
+  ctx.font = '600 ' + Math.round(14 * dpr * Math.max(1, Z)) + 'px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+  ctx.fillStyle = COL.say;
+  for (const b of bunnies) {
+    if (b.sayT <= 0) continue;
+    ctx.globalAlpha = Math.min(1, b.sayT / 0.4);
+    ctx.fillText(b.say, ox + b.x * k, oy + (b.y - 62) * k);
+  }
+  if (cat.sayT > 0) {
+    ctx.globalAlpha = Math.min(1, cat.sayT / 0.4);
+    ctx.fillText(cat.say, ox + cat.x * k, oy + (cat.y - (pairShown ? 82 : 64)) * k);
+  }
+  ctx.globalAlpha = 1;
+
+  // arrows to the five nearest sad bunnies
+  const list = [];
+  for (const b of bunnies) if (b.sad && !b.hugging) list.push({ b, d: Math.hypot(b.x - cat.x, b.y - cat.y) });
+  list.sort((a, c) => a.d - c.d);
+  list.length = Math.min(5, list.length);
+  const U = 48, rx = Math.min(0.36 * vw, 7 * U * Z), ry = Math.min(0.36 * vh, 7 * U * Z);
+  const fs = Math.round(12 * dpr * Math.max(1, Z));
+  ctx.font = '500 ' + fs + 'px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+  for (const { b, d } of list) {
+    const ang = Math.atan2(b.y - cat.y, b.x - cat.x), c = Math.cos(ang), s = Math.sin(ang);
+    const ring = 1 / Math.sqrt((c / rx) * (c / rx) + (s / ry) * (s / ry));       // css px to the ring in this direction
+    const off = Math.max(46 * Z, Math.min(ring, (d - 36) * Z));
+    const ax = W / 2 + c * off * dpr, ay = H / 2 + s * off * dpr, size = 20 * dpr * Math.max(1, Z);
+    ctx.save(); ctx.translate(ax, ay); ctx.rotate(ang);
+    ctx.beginPath(); ctx.moveTo(size * 0.62, 0); ctx.lineTo(-size * 0.45, -size * 0.42); ctx.lineTo(-size * 0.18, 0); ctx.lineTo(-size * 0.45, size * 0.42); ctx.closePath();
+    ctx.fillStyle = COL.arrow; ctx.fill(); ctx.restore();
+    if (time - b.labelT > 0.12) { b.label = Math.round(d) + 'px'; b.labelT = time; }
+    ctx.fillStyle = COL.label;
+    const dx = ax - W / 2;
+    if (Math.abs(dx) < 26 * dpr) { ctx.textAlign = 'center'; ctx.fillText(b.label, ax, ay - size * 0.8); }
+    else { ctx.textAlign = dx < 0 ? 'left' : 'right'; ctx.fillText(b.label, ax + (dx < 0 ? 1 : -1) * size * 0.75, ay - size * 0.28); }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ *  Loop + boot
+ * ------------------------------------------------------------------ */
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000 || 0); last = now;
+  update(dt); draw();
+  requestAnimationFrame(frame);
+}
+
+function snapshot() {
+  return { seed, cat: { x: cat.x, y: cat.y }, cheered: bunnies.map((b, i) => (b.sad ? -1 : i)).filter(i => i >= 0) };
+}
+
+function start(data) {
+  if (started) return;
+  started = true;
+  resize();
+  newGame(data && data.seed != null ? data : {});
+  if (typeof ResizeObserver === 'function') new ResizeObserver(resize).observe(stage);
+  window.addEventListener('resize', resize);
+  try { if (window.claude && window.claude.hot && typeof window.claude.hot.snapshot === 'function') window.claude.hot.snapshot(snapshot); } catch (_) {}
+  if (location.hash === '#debug') {
+    window.__game = {
+      get cat() { return cat; }, get bunnies() { return bunnies; }, get hug() { return hug; }, get remaining() { return remaining; },
+      get carrots() { return carrots; }, get flies() { return flies; }, get fx() { return fx; },
+      view: () => ({ vw, vh, Z, dpr }), meow, tree: (x, y) => nearTree(x, y, 1), flower: (ix, iy) => flowerAt(ix, iy), flyFrames: () => spr.fly.map(p => p.map(s => s.c.toDataURL())),
+      tp: (x, y) => { cat.x = cat.tx = x; cat.y = cat.ty = y; }
+    };
+  }
+  draw();
+  last = performance.now();
+  requestAnimationFrame(frame);
+}
+
+try {
+  if (window.claude && window.claude.hot && window.claude.hot.ready) window.claude.hot.ready(start);
+  else start((window.claude && window.claude.hot && window.claude.hot.data) || {});
+} catch (_) { start({}); }
+})();
+</script>
+</body>
+</html>
