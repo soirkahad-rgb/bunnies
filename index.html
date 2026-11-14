@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#a3e3f2">
+</head>
+<body>
 <title>Sad Bunnies</title>
 <style>
   /* One screen, one world: a flat pale-blue map that scrolls under a centred cat. */
@@ -49,14 +50,28 @@
   }
   #end[hidden] { display: none; }
   #end p { margin: 0; font-size: 26px; font-weight: 700; color: var(--end-ink); text-wrap: balance; }
-  #end button {
+  #end button, #start button {
     font: inherit; font-size: 17px; font-weight: 700; padding: 12px 28px; border-radius: 999px; cursor: pointer;
     border: 2px solid var(--bar-edge); background: var(--bar); color: var(--bar-edge);
   }
   #end button:focus-visible { outline: 3px solid var(--bar-edge); outline-offset: 3px; }
+  #start {
+    position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    padding: 24px; text-align: center; background: rgba(163, 227, 242, .97);
+  }
+  #start[hidden] { display: none; }
+  #start h1 { margin: 0 0 4px; font-size: 30px; color: var(--end-ink); }
+  #start input {
+    font: inherit; font-size: 18px; padding: 10px 14px; width: 280px; max-width: 80vw; box-sizing: border-box; text-align: center;
+    border-radius: 12px; border: 2px solid var(--bar-edge); background: #fff; color: var(--ink); -webkit-user-select: text; user-select: text;
+  }
+  #start button.alt { background: transparent; }
+  #start button:disabled { opacity: .6; }
+  #start small { max-width: 300px; min-height: 1.4em; font-size: 13px; line-height: 1.4; color: var(--hint); }
+  #net { position: fixed; top: 0; left: 0; z-index: 2; padding: calc(env(safe-area-inset-top, 0px) + 12px) 0 0 16px; font-size: 13px; font-weight: 600; line-height: 1; color: #3d6272; pointer-events: none; }
+  #net[hidden] { display: none; }
 </style>
-</head>
-<body>
+
 <div id="stage">
   <canvas id="game" role="img" aria-label="Sad Bunnies game: tap to walk the cat to a sad bunny and hug it"></canvas>
   <div id="hud" aria-live="polite">
@@ -67,6 +82,14 @@
   <div id="end" hidden>
     <p>All the bunnies are happy!</p>
     <button id="again" type="button">Play again</button>
+  </div>
+  <div id="net" hidden></div>
+  <div id="start">
+    <h1>Sad Bunnies</h1>
+    <input id="nameIn" type="text" maxlength="12" placeholder="Your name" autocomplete="off" autocapitalize="words" aria-label="Your name">
+    <button id="playTogether" type="button">Play together</button>
+    <button id="playAlone" type="button" class="alt">Play alone</button>
+    <small id="startNote">Together: everybody who opens this page joins the same meadow.</small>
   </div>
 </div>
 
@@ -223,12 +246,13 @@ function composePair(lean) {
   return g.map(r => r.join(''));
 }
 
-function buildSprite(rows, cellPx, outline) {
+function buildSprite(rows, cellPx, outline, pal) {
+  const P = pal || PAL;
   const h = rows.length, w = rows[0].length, pad = outline === false ? 0 : 1;
   const W = w + pad * 2, H = h + pad * 2;
   let g = [];
   for (let y = 0; y < H; y++) g.push(new Array(W).fill(null));
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const ch = rows[y][x]; if (ch !== '.') g[y + pad][x + pad] = PAL[ch]; }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const ch = rows[y][x]; if (ch !== '.') g[y + pad][x + pad] = P[ch]; }
   if (pad) {
     const o = g.map(r => r.slice());
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
@@ -287,7 +311,7 @@ function hash(ix, iy, k) {
 
 function buildSprites() {
   const S = cell, F = Math.max(1, Math.round(cell * 2 / 3)), I = Math.max(1, Math.round(2 * dpr));
-  const mk = (rows, c, o) => buildSprite(rows, c || S, o);
+  const mk = (rows, c, o, p) => buildSprite(rows, c || S, o, p);
   const sub = (rows, from, to) => rows.map(r => r.replace(new RegExp(from, 'g'), to));
   const pair = [mk(composePair(0)), mk(composePair(1))];
   spr = {
@@ -300,6 +324,11 @@ function buildSprites() {
     flower: ['m', 'n', 'l', 'u'].map(ch => mk(sub(FLOWER, 'F', ch), F, false)),
     pair: [pair, pair.map(flipSprite)]
   };
+  spr.skins = CAT_SKINS.map(sk => {
+    const P = Object.assign({}, PAL, sk);
+    const pr = [mk(composePair(0), S, true, P), mk(composePair(1), S, true, P)];
+    return { catA: mk(CAT, S, true, P), catB: mk(edit(CAT, { 13: '..OO..OO..' }), S, true, P), catSleep: mk(CAT_SLEEP, S, true, P), pair: [pr, pr.map(flipSprite)] };
+  });
   document.getElementById('hudBunny').src = mk(BUN_SAD.slice(0, 11), I).c.toDataURL();
   document.getElementById('hudCarrot').src = mk(CARROT, I).c.toDataURL();
   document.getElementById('hudFly').src = mk(sub(FLY_OPEN, 'B', 'a'), I).c.toDataURL();
@@ -450,6 +479,7 @@ function cancelHug() {
 }
 
 function meow() {
+  net.meow++;
   cat.sleeping = false; cat.idleT = 0;
   cat.say = 'meow!'; cat.sayT = 1.2; cat.jumpT = 0.45;
   fxHeart(cat.x + 6, cat.y - 54);
@@ -520,7 +550,7 @@ document.addEventListener('visibilitychange', releasePointer);
 // keep the phone's own swipe gestures (scroll, pull to refresh) away from the game
 document.addEventListener('touchmove', e => { if (e.cancelable) e.preventDefault(); }, { passive: false });
 document.addEventListener('touchstart', e => { if (e.target === canvas && e.cancelable) e.preventDefault(); }, { passive: false });
-againBtn.addEventListener('click', () => newGame());
+againBtn.addEventListener('click', () => playAgain());
 
 /* ------------------------------------------------------------------ *
  *  Update
@@ -542,10 +572,8 @@ function finishHug() {
   b.mode = 'wait'; b.wt = 0.9;
   for (let i = 0; i < (gift ? 7 : 4); i++) fxHeart(b.x + (Math.random() < 0.5 ? -1 : 1) * (26 + Math.random() * 20), b.y - 30 - Math.random() * 24);
   hug = null; cat.state = 'free';
-  remaining = bunnies.filter(x => x.sad).length;
-  countEl.textContent = 'x ' + remaining;
+  afterCheer(); netCheer(b);
   if (hintStage === 1) { hintStage = 2; setTimeout(() => showHint('Tap the cat to call the happy bunnies. Carrots make hugs faster.', 7000), 2500); }
-  if (remaining === 0) endTimer = setTimeout(() => { endEl.hidden = false; }, 2200);
 }
 
 function updateHug(dt) {
@@ -697,6 +725,7 @@ function roundRectPath(x, y, w, h, r) {
 
 function draw() {
   if (!spr || !cat) return;
+  const SK = spr.skins[mySkin];
   const W = canvas.width, H = canvas.height, k = Z * dpr;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false;
@@ -731,6 +760,7 @@ function draw() {
   }
   for (const c of carrots) if (c.x > left && c.x < right && c.y > top - 40 && c.y < bottom + 20) items.push([c.y, 3, c]);
   items.push([cat.y, pairShown ? 5 : 2, cat]);
+  for (const p of net.players.values()) if (p.visible && p.x > left && p.x < right && p.y > top - 70 && p.y < bottom + 40) items.push([p.y, 6, p]);
   items.sort((a, b) => a[0] - b[0]);
 
   for (const [, type, o] of items) {
@@ -743,13 +773,19 @@ function draw() {
     } else if (type === 3) {
       ctx.drawImage(spr.carrot.c, px(ox + o.x * k - spr.carrot.w / 2), px(oy + o.y * k - spr.carrot.h));
     } else if (type === 5) {
-      const S = spr.pair[hug.side < 0 ? 0 : 1][Math.floor(time * 2.5) % 2];
+      const S = SK.pair[hug.side < 0 ? 0 : 1][Math.floor(time * 2.5) % 2];
       const anchor = (hug.side < 0 ? 6 : PAIR_W + 2 - 6) * cell;
       ctx.drawImage(S.c, px(ox + cat.x * k - anchor), px(oy + cat.y * k - S.h));
+    } else if (type === 6) {
+      const R = spr.skins[o.c % spr.skins.length];
+      let S = R.catA, lift = 0;
+      if (o.sl) { S = R.catSleep; lift = -cell; }
+      else if (o.moving) { const f = Math.floor(time * 8) % 2; S = f ? R.catB : R.catA; lift = f ? cell : 0; }
+      ctx.drawImage(S.c, px(ox + o.x * k - S.w / 2), px(oy + o.y * k - S.h - lift));
     } else {
-      let S = spr.catA, lift = 0;
-      if (cat.sleeping) { S = spr.catSleep; lift = -cell; }
-      else if (cat.moving || hug) { const f = Math.floor(time * (cat.boost > 0 ? 12 : 8)) % 2; S = f ? spr.catB : spr.catA; lift = f ? cell : 0; }
+      let S = SK.catA, lift = 0;
+      if (cat.sleeping) { S = SK.catSleep; lift = -cell; }
+      else if (cat.moving || hug) { const f = Math.floor(time * (cat.boost > 0 ? 12 : 8)) % 2; S = f ? SK.catB : SK.catA; lift = f ? cell : 0; }
       if (cat.jumpT > 0) lift += Math.sin((1 - cat.jumpT / 0.45) * Math.PI) * 20 * k;
       ctx.drawImage(S.c, px(ox + cat.x * k - S.w / 2), px(oy + cat.y * k - S.h - lift));
       for (let i = 0; i < cat.carrots; i++) {                  // carrots the cat carries
@@ -757,6 +793,15 @@ function draw() {
         ctx.drawImage(c.c, px(ox + cat.x * k + 20 * k + i * 12 * k), px(oy + (cat.y - 4) * k - c.h));
       }
     }
+  }
+
+  // names under the cats
+  if (net.on) {
+    ctx.font = '600 ' + Math.round(11 * dpr * Math.max(1, Z)) + 'px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = COL.say; ctx.globalAlpha = 0.85;
+    ctx.fillText(net.name, ox + cat.x * k, oy + (cat.y + 14) * k);
+    for (const p of net.players.values()) if (p.visible) ctx.fillText(p.n, ox + p.x * k, oy + (p.y + 14) * k);
+    ctx.globalAlpha = 1;
   }
 
   // butterflies float above everything
@@ -799,7 +844,7 @@ function draw() {
   // hug progress bar above the pair
   if (pairShown) {
     const p = clamp((hug.t - HUG_SLIDE) / hug.fill, 0, 1);
-    const topY = cat.y - spr.pair[0][0].h / k;
+    const topY = cat.y - SK.pair[0][0].h / k;
     const bw = 40 * k, bh = 9 * k, bx = ox + (cat.x + hug.b.x) / 2 * k - bw / 2, by = oy + topY * k - 14 * k;
     roundRectPath(bx, by, bw, bh, bh / 2); ctx.fillStyle = 'rgba(255,255,255,.82)'; ctx.fill();
     ctx.save(); roundRectPath(bx, by, bw, bh, bh / 2); ctx.clip();
@@ -820,6 +865,11 @@ function draw() {
   if (cat.sayT > 0) {
     ctx.globalAlpha = Math.min(1, cat.sayT / 0.4);
     ctx.fillText(cat.say, ox + cat.x * k, oy + (cat.y - (pairShown ? 82 : 64)) * k);
+  }
+  for (const p of net.players.values()) {
+    if (!p.visible || p.sayT <= 0) continue;
+    ctx.globalAlpha = Math.min(1, p.sayT / 0.4);
+    ctx.fillText(p.say, ox + p.x * k, oy + (p.y - 64) * k);
   }
   ctx.globalAlpha = 1;
 
@@ -845,14 +895,236 @@ function draw() {
     if (Math.abs(dx) < 26 * dpr) { ctx.textAlign = 'center'; ctx.fillText(b.label, ax, ay - size * 0.8); }
     else { ctx.textAlign = dx < 0 ? 'left' : 'right'; ctx.fillText(b.label, ax + (dx < 0 ? 1 : -1) * size * 0.75, ay - size * 0.28); }
   }
+
+  // red arrows to the other players, so you can always find your friends
+  if (net.on) {
+    for (const p of net.players.values()) {
+      if (!p.visible) continue;
+      const fx0 = p.x - cat.x, fy0 = p.y - cat.y, fd = Math.hypot(fx0, fy0);
+      if (Math.abs(fx0) * Z < vw / 2 - 24 && Math.abs(fy0) * Z < vh / 2 - 24) continue;     // already on screen
+      const c = fx0 / fd, s = fy0 / fd;
+      const tt = Math.min((vw / 2 - 30) / Math.max(Math.abs(c), 1e-6), (vh / 2 - 46) / Math.max(Math.abs(s), 1e-6));
+      const ax = W / 2 + c * tt * dpr, ay = H / 2 + s * tt * dpr, size = 20 * dpr * Math.max(1, Z);
+      ctx.save(); ctx.translate(ax, ay); ctx.rotate(Math.atan2(fy0, fx0));
+      ctx.beginPath(); ctx.moveTo(size * 0.62, 0); ctx.lineTo(-size * 0.45, -size * 0.42); ctx.lineTo(-size * 0.18, 0); ctx.lineTo(-size * 0.45, size * 0.42); ctx.closePath();
+      ctx.fillStyle = '#e5484d'; ctx.fill(); ctx.restore();
+      ctx.fillStyle = '#d23a3f'; ctx.font = '700 ' + fs + 'px system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+      const label = p.n + ' ' + Math.round(fd) + 'px';
+      if (Math.abs(c) * (vw / 2) > Math.abs(s) * (vh / 2)) { ctx.textAlign = c < 0 ? 'left' : 'right'; ctx.fillText(label, ax + (c < 0 ? 1 : -1) * size * 0.8, ay + size * 0.2); }
+      else { ctx.textAlign = 'center'; const hw = ctx.measureText(label).width / 2 + 6 * dpr; ctx.fillText(label, Math.max(hw, Math.min(W - hw, ax)), ay + (s < 0 ? 1 : -1) * size * 0.95 + (s < 0 ? size * 0.3 : 0)); }
+    }
+  }
 }
+
+/* ------------------------------------------------------------------ *
+ *  Play together. Everybody who joins shares one meadow through a free
+ *  Firebase Realtime Database, used over plain HTTPS (no library):
+ *    rooms/main/players/<id>   where each cat is (sent a few times a second)
+ *    rooms/main/happy/b<n>     which bunnies are already happy
+ *    rooms/main/round          the map seed; a new number starts a new game
+ * ------------------------------------------------------------------ */
+const DB_URL = 'https://bunny-23dec-default-rtdb.asia-southeast1.firebasedatabase.app';
+const ROOM = 'rooms/main';
+const SEND_MS = 120, BEAT_MS = 1500, STALE_MS = 5000, PURGE_MS = 40000;
+const CAT_SKINS = [
+  { O: '#f1c089', D: '#e0a56a', L: '#f9dcb0' },   // ginger
+  { O: '#b9bfc7', D: '#9aa1aa', L: '#e4e8ec' },   // grey
+  { O: '#c98a5b', D: '#a8693f', L: '#ecc9a6' },   // brown
+  { O: '#f4f4f4', D: '#d6d6d6', L: '#ffffff' },   // white
+  { O: '#7b8290', D: '#5f6672', L: '#b3b9c3' }    // charcoal
+];
+const net = { on: false, joined: false, id: '', name: 'Cat', es: null, room: {}, players: new Map(), round: null, k: 0, meow: 0, busy: false, lastSend: 0, lastKey: '', shown: 0 };
+let mySkin = 0;
+const startEl = document.getElementById('start'), netEl = document.getElementById('net'), nameIn = document.getElementById('nameIn');
+const togetherBtn = document.getElementById('playTogether'), aloneBtn = document.getElementById('playAlone'), startNote = document.getElementById('startNote');
+
+function dbReq(path, method, body, keepalive) {
+  return fetch(DB_URL + '/' + path + '.json', { method: method, body: body === undefined ? undefined : JSON.stringify(body), keepalive: !!keepalive });
+}
+function skinOf(id) { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0; return Math.abs(h) % CAT_SKINS.length; }
+
+function mergeInto(obj, data) {
+  if (!data || typeof data !== 'object') return;
+  for (const key in data) { if (data[key] === null) delete obj[key]; else obj[key] = data[key]; }
+}
+// Firebase streams "put" (replace) and "patch" (merge) events for a path below the room
+function applyNetEvent(type, raw) {
+  let msg;
+  try { msg = JSON.parse(raw); } catch (_) { return false; }
+  if (!msg || typeof msg.path !== 'string') return false;
+  const parts = msg.path.split('/').filter(Boolean);
+  if (!parts.length) {
+    if (type === 'put') net.room = (msg.data && typeof msg.data === 'object') ? msg.data : {};
+    else mergeInto(net.room, msg.data);
+    return true;
+  }
+  let node = net.room;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (node[parts[i]] == null || typeof node[parts[i]] !== 'object') node[parts[i]] = {};
+    node = node[parts[i]];
+  }
+  const last = parts[parts.length - 1];
+  if (type === 'put') { if (msg.data == null) delete node[last]; else node[last] = msg.data; }
+  else { if (node[last] == null || typeof node[last] !== 'object') node[last] = {}; mergeInto(node[last], msg.data); }
+  return true;
+}
+
+function afterCheer() {
+  remaining = bunnies.filter(x => x.sad).length;
+  countEl.textContent = 'x ' + remaining;
+  if (remaining === 0 && endEl.hidden) { clearTimeout(endTimer); endTimer = setTimeout(() => { endEl.hidden = false; }, 2200); }
+}
+function netCheer(b) {
+  if (!net.on) return;
+  dbReq(ROOM + '/happy/b' + bunnies.indexOf(b), 'PUT', 1).catch(() => {});
+}
+function cheerRemote(i, quiet) {
+  const b = bunnies[i];
+  if (!b || !b.sad || b.hugging) return;
+  b.sad = false;
+  if (quiet) { b.mode = 'idle'; b.wt = 1 + Math.random() * 2; return; }
+  b.mode = 'wait'; b.wt = 0.5 + Math.random() * 0.8; b.say = 'yay!'; b.sayT = 1.5;
+  for (let n = 0; n < 3; n++) fxHeart(b.x + (Math.random() < 0.5 ? -1 : 1) * (24 + Math.random() * 18), b.y - 30 - Math.random() * 24);
+  afterCheer();
+}
+
+function syncFromRoom(quiet) {
+  const room = net.room, now = performance.now();
+  const r = room.round;
+  if (net.joined && r !== undefined && r !== net.round) {          // somebody pressed "Play again"
+    net.round = r;
+    newGame({ seed: Number(r) || 1, cat: { x: Math.floor(Math.random() * 80) - 40, y: Math.floor(Math.random() * 40) - 20 } });
+  }
+  const pl = room.players || {};
+  for (const id in pl) {
+    if (id === net.id) continue;
+    const s = pl[id];
+    if (!s || typeof s.x !== 'number' || typeof s.y !== 'number') continue;
+    let p = net.players.get(id);
+    if (!p) { p = { x: s.x, y: s.y, tx: s.x, ty: s.y, n: 'Cat', c: 0, mv: 0, sl: 0, m: s.m | 0, k: null, seen: now, sayT: 0, say: '', moving: false, visible: true }; net.players.set(id, p); }
+    p.tx = s.x; p.ty = s.y; p.n = String(s.n || 'Cat').slice(0, 12); p.c = s.c | 0; p.mv = s.mv ? 1 : 0; p.sl = s.sl ? 1 : 0;
+    if (s.k !== p.k) { p.k = s.k; p.seen = now; }
+    if ((s.m | 0) > p.m) { p.say = 'meow!'; p.sayT = 1.2; }
+    p.m = s.m | 0;
+  }
+  for (const id of Array.from(net.players.keys())) if (!pl[id]) net.players.delete(id);
+  const hp = room.happy || {};
+  for (const key in hp) if (hp[key]) cheerRemote(Number(String(key).slice(1)), quiet);
+}
+
+function joinFirst() {
+  net.id = 'p' + Date.now().toString(36) + Math.floor(Math.random() * 1e6).toString(36);
+  mySkin = skinOf(net.id);
+  const r = net.room.round;
+  net.round = r === undefined ? 1 : r;
+  newGame({ seed: Number(net.round) || 1, cat: { x: Math.floor(Math.random() * 80) - 40, y: Math.floor(Math.random() * 40) - 20 } });
+  net.on = true; net.joined = false; net.k = 0; net.meow = 0; net.lastSend = 0; net.lastKey = ''; net.shown = 0;
+  syncFromRoom(true);
+  afterCheer();
+  net.joined = true;
+  netEl.hidden = false;
+  window.addEventListener('pagehide', leaveRoom);
+}
+function leaveRoom() {
+  if (!net.on) return;
+  try { dbReq(ROOM + '/players/' + net.id, 'DELETE', undefined, true).catch(() => {}); } catch (_) {}
+}
+
+function openStream(onFirst) {
+  let es;
+  try { es = new EventSource(DB_URL + '/' + ROOM + '.json'); } catch (_) { return null; }
+  es.addEventListener('put', e => {
+    if (!applyNetEvent('put', e.data)) return;
+    if (onFirst) { const f = onFirst; onFirst = null; f(); } else syncFromRoom(false);
+  });
+  es.addEventListener('patch', e => { if (applyNetEvent('patch', e.data) && !onFirst) syncFromRoom(false); });
+  es.addEventListener('cancel', () => { try { es.close(); } catch (_) {} });
+  es.onerror = () => {
+    if (es.readyState === 2) setTimeout(() => { if (net.on) net.es = openStream(null); }, 3000);   // the browser retries by itself otherwise
+  };
+  return es;
+}
+function goOnline() {
+  return new Promise(resolve => {
+    if (typeof EventSource !== 'function' || typeof fetch !== 'function') { resolve(false); return; }
+    let finished = false, timer = 0;
+    const finish = ok => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      if (!ok && net.es) { try { net.es.close(); } catch (_) {} net.es = null; }
+      resolve(ok);
+    };
+    timer = setTimeout(() => finish(false), 7000);
+    const es = openStream(() => { joinFirst(); finish(true); });
+    if (!es) { finish(false); return; }
+    net.es = es;
+    const retry = es.onerror;
+    es.onerror = () => { if (!finished) finish(false); else retry(); };
+  });
+}
+
+function netTick(now) {
+  if (!net.on || !cat) return;
+  if (net.busy && now - net.lastSend > 4000) net.busy = false;
+  if (net.busy) return;
+  const x = Math.round(cat.x * 10) / 10, y = Math.round(cat.y * 10) / 10;
+  const key = x + ',' + y + ',' + (cat.moving ? 1 : 0) + ',' + (cat.sleeping ? 1 : 0) + ',' + net.meow;
+  if (now - net.lastSend < (key !== net.lastKey ? SEND_MS : BEAT_MS)) return;
+  net.lastSend = now; net.lastKey = key; net.busy = true; net.k++;
+  dbReq(ROOM + '/players/' + net.id, 'PATCH', { n: net.name, x: x, y: y, mv: cat.moving ? 1 : 0, sl: cat.sleeping ? 1 : 0, c: mySkin, m: net.meow, k: net.k })
+    .catch(() => {}).then(() => { net.busy = false; });
+}
+
+function updateRemotes(dt) {
+  if (!net.on) return;
+  const now = performance.now();
+  let count = 1;
+  for (const [id, p] of net.players) {
+    const dx = p.tx - p.x, dy = p.ty - p.y, f = Math.min(1, dt * 10);
+    if (Math.abs(dx) > 500 || Math.abs(dy) > 500) { p.x = p.tx; p.y = p.ty; } else { p.x += dx * f; p.y += dy * f; }
+    p.moving = !!p.mv || Math.hypot(dx, dy) > 3;
+    p.sayT = Math.max(0, p.sayT - dt);
+    p.visible = now - p.seen < STALE_MS;
+    if (p.visible) count++;
+    else if (now - p.seen > PURGE_MS) {                       // a cat that left without saying goodbye
+      net.players.delete(id);
+      if (net.room.players) delete net.room.players[id];
+      dbReq(ROOM + '/players/' + id, 'DELETE').catch(() => {});
+    }
+  }
+  if (count !== net.shown) { net.shown = count; netEl.textContent = count + (count === 1 ? ' player online' : ' players online'); }
+}
+
+function playAgain() {
+  if (!net.on) { newGame(); return; }
+  dbReq(ROOM, 'PATCH', { round: 1 + Math.floor(Math.random() * 2000000000), happy: null }).catch(() => {});
+  setTimeout(() => { if (!endEl.hidden) newGame({ seed: Number(net.round) || 1 }); }, 3000);   // in case the news never arrives
+}
+
+try { nameIn.value = localStorage.getItem('bunnyName') || ''; } catch (_) {}
+if (!nameIn.value) nameIn.value = 'Cat ' + (10 + Math.floor(Math.random() * 90));
+function readName() {
+  const n = (nameIn.value || '').replace(/\s+/g, ' ').trim().slice(0, 12) || 'Cat';
+  try { localStorage.setItem('bunnyName', n); } catch (_) {}
+  net.name = n;
+}
+aloneBtn.addEventListener('click', () => { readName(); startEl.hidden = true; showHint('Tap or drag where you want the cat to go', 9000); });
+togetherBtn.addEventListener('click', () => {
+  readName();
+  togetherBtn.disabled = true; togetherBtn.textContent = 'Connecting...'; startNote.textContent = '';
+  goOnline().then(ok => {
+    togetherBtn.disabled = false; togetherBtn.textContent = 'Play together';
+    if (ok) startEl.hidden = true;
+    else startNote.textContent = "Couldn't reach the meadow. Check your internet, or play alone.";
+  });
+});
 
 /* ------------------------------------------------------------------ *
  *  Loop + boot
  * ------------------------------------------------------------------ */
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000 || 0); last = now;
-  update(dt); draw();
+  update(dt); updateRemotes(dt); netTick(now); draw();
   requestAnimationFrame(frame);
 }
 
@@ -871,7 +1143,7 @@ function start(data) {
   if (location.hash === '#debug') {
     window.__game = {
       get cat() { return cat; }, get bunnies() { return bunnies; }, get hug() { return hug; }, get remaining() { return remaining; },
-      get carrots() { return carrots; }, get flies() { return flies; }, get fx() { return fx; },
+      get carrots() { return carrots; }, get flies() { return flies; }, get fx() { return fx; }, get net() { return net; },
       view: () => ({ vw, vh, Z, dpr }), meow, tree: (x, y) => nearTree(x, y, 1), flower: (ix, iy) => flowerAt(ix, iy), flyFrames: () => spr.fly.map(p => p.map(s => s.c.toDataURL())),
       tp: (x, y) => { cat.x = cat.tx = x; cat.y = cat.ty = y; }
     };
@@ -887,5 +1159,6 @@ try {
 } catch (_) { start({}); }
 })();
 </script>
+
 </body>
 </html>
